@@ -1,165 +1,113 @@
-#!/usr/bin/env python
 
-from setuptools import find_packages, setup
-
+import io
 import os
-import subprocess
-import time
-import torch
-from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDAExtension
+import sys
+from shutil import rmtree
 
-version_file = 'basicsr/version.py'
+from setuptools import Command
+from setuptools import find_packages
+from setuptools import setup
+
+# Configure library params.
+NAME = "rfb_esrgan_pytorch"
+DESCRIPTION = "Perceptual Extreme Super Resolution Network with Receptive Field Block."
+URL = "https://github.com/Lornatang/RFB_ESRGAN-PyTorch"
+EMAIL = "liu_changyu@dakewe.com"
+AUTHOR = "Liu Goodfellow"
+REQUIRES_PYTHON = ">=3.6.0"
+VERSION = "0.3.0"
+
+# Libraries that must be installed.
+REQUIRED = [
+    "torch",
+    "torchvision",
+    "pillow",
+    "numpy",
+    "opencv-python",
+    "tqdm",
+    "scipy",
+    "lpips"
+]
+
+# The following libraries directory need to be installed if you need to run all scripts.
+EXTRAS = {
+
+}
+
+# Find the current running location.
+here = os.path.abspath(os.path.dirname(__file__))
+
+# About README file description.
+try:
+    with io.open(os.path.join(here, "README.md"), encoding="utf-8") as f:
+        long_description = "\n" + f.read()
+except FileNotFoundError:
+    long_description = DESCRIPTION
+
+# Set Current Library Version.
+about = {}
+if not VERSION:
+    project_slug = NAME.lower().replace("-", "_").replace(" ", "_")
+    with open(os.path.join(here, project_slug, "__version__.py")) as f:
+        exec(f.read(), about)
+else:
+    about["__version__"] = VERSION
 
 
-def readme():
-    with open('README.md', encoding='utf-8') as f:
-        content = f.read()
-    return content
+class UploadCommand(Command):
+    description = "Build and publish the package."
+    user_options = []
 
+    @staticmethod
+    def status(s):
+        print("\033[1m{0}\033[0m".format(s))
 
-def get_git_hash():
+    def initialize_options(self):
+        pass
 
-    def _minimal_ext_cmd(cmd):
-        # construct minimal environment
-        env = {}
-        for k in ['SYSTEMROOT', 'PATH', 'HOME']:
-            v = os.environ.get(k)
-            if v is not None:
-                env[k] = v
-        # LANGUAGE is used on win32
-        env['LANGUAGE'] = 'C'
-        env['LANG'] = 'C'
-        env['LC_ALL'] = 'C'
-        out = subprocess.Popen(cmd, stdout=subprocess.PIPE, env=env).communicate()[0]
-        return out
+    def finalize_options(self):
+        pass
 
-    try:
-        out = _minimal_ext_cmd(['git', 'rev-parse', 'HEAD'])
-        sha = out.strip().decode('ascii')
-    except OSError:
-        sha = 'unknown'
-
-    return sha
-
-
-def get_hash():
-    if os.path.exists('.git'):
-        sha = get_git_hash()[:7]
-    elif os.path.exists(version_file):
+    def run(self):
         try:
-            from basicsr.version import __version__
-            sha = __version__.split('+')[-1]
-        except ImportError:
-            raise ImportError('Unable to get git version')
-    else:
-        sha = 'unknown'
+            self.status("Removing previous builds…")
+            rmtree(os.path.join(here, "dist"))
+        except OSError:
+            pass
 
-    return sha
+        self.status("Building Source and Wheel (universal) distribution…")
+        os.system("{0} setup.py sdist bdist_wheel --universal".format(sys.executable))
 
+        self.status("Uploading the package to PyPI via Twine…")
+        os.system("twine upload dist/*")
 
-def write_version_py():
-    content = """# GENERATED VERSION FILE
-# TIME: {}
-__version__ = '{}'
-__gitsha__ = '{}'
-version_info = ({})
-"""
-    sha = get_hash()
-    with open('VERSION', 'r') as f:
-        SHORT_VERSION = f.read().strip()
-    VERSION_INFO = ', '.join([x if x.isdigit() else f'"{x}"' for x in SHORT_VERSION.split('.')])
+        self.status("Pushing git tags…")
+        os.system("git tag v{0}".format(about["__version__"]))
+        os.system("git push --tags")
 
-    version_file_str = content.format(time.asctime(), SHORT_VERSION, sha, VERSION_INFO)
-    with open(version_file, 'w') as f:
-        f.write(version_file_str)
+        sys.exit()
 
 
-def get_version():
-    with open(version_file, 'r') as f:
-        exec(compile(f.read(), version_file, 'exec'))
-    return locals()['__version__']
-
-
-def make_cuda_ext(name, module, sources, sources_cuda=None):
-    if sources_cuda is None:
-        sources_cuda = []
-    define_macros = []
-    extra_compile_args = {'cxx': []}
-
-    if torch.cuda.is_available() or os.getenv('FORCE_CUDA', '0') == '1':
-        define_macros += [('WITH_CUDA', None)]
-        extension = CUDAExtension
-        extra_compile_args['nvcc'] = [
-            '-D__CUDA_NO_HALF_OPERATORS__',
-            '-D__CUDA_NO_HALF_CONVERSIONS__',
-            '-D__CUDA_NO_HALF2_OPERATORS__',
-        ]
-        sources += sources_cuda
-    else:
-        print(f'Compiling {name} without CUDA')
-        extension = CppExtension
-
-    return extension(
-        name=f'{module}.{name}',
-        sources=[os.path.join(*module.split('.'), p) for p in sources],
-        define_macros=define_macros,
-        extra_compile_args=extra_compile_args)
-
-
-def get_requirements(filename='requirements.txt'):
-    here = os.path.dirname(os.path.realpath(__file__))
-    with open(os.path.join(here, filename), 'r') as f:
-        requires = [line.replace('\n', '') for line in f.readlines()]
-    return requires
-
-
-if __name__ == '__main__':
-    cuda_ext = os.getenv('BASICSR_EXT')  # whether compile cuda ext
-    if cuda_ext == 'True':
-        ext_modules = [
-            make_cuda_ext(
-                name='deform_conv_ext',
-                module='basicsr.ops.dcn',
-                sources=['src/deform_conv_ext.cpp'],
-                sources_cuda=['src/deform_conv_cuda.cpp', 'src/deform_conv_cuda_kernel.cu']),
-            make_cuda_ext(
-                name='fused_act_ext',
-                module='basicsr.ops.fused_act',
-                sources=['src/fused_bias_act.cpp'],
-                sources_cuda=['src/fused_bias_act_kernel.cu']),
-            make_cuda_ext(
-                name='upfirdn2d_ext',
-                module='basicsr.ops.upfirdn2d',
-                sources=['src/upfirdn2d.cpp'],
-                sources_cuda=['src/upfirdn2d_kernel.cu']),
-        ]
-    else:
-        ext_modules = []
-
-    write_version_py()
-    setup(
-        name='basicsr',
-        version=get_version(),
-        description='Open Source Image and Video Super-Resolution Toolbox',
-        long_description=readme(),
-        long_description_content_type='text/markdown',
-        author='Xintao Wang',
-        author_email='xintao.wang@outlook.com',
-        keywords='computer vision, restoration, super resolution',
-        url='https://github.com/xinntao/BasicSR',
-        include_package_data=True,
-        packages=find_packages(exclude=('options', 'datasets', 'experiments', 'results', 'tb_logger', 'wandb')),
-        classifiers=[
-            'Development Status :: 4 - Beta',
-            'License :: OSI Approved :: Apache Software License',
-            'Operating System :: OS Independent',
-            'Programming Language :: Python :: 3',
-            'Programming Language :: Python :: 3.7',
-            'Programming Language :: Python :: 3.8',
-        ],
-        license='Apache License 2.0',
-        setup_requires=['cython', 'numpy'],
-        install_requires=get_requirements(),
-        ext_modules=ext_modules,
-        cmdclass={'build_ext': BuildExtension},
-        zip_safe=False)
+setup(name=NAME,
+      version=about["__version__"],
+      description=DESCRIPTION,
+      long_description=long_description,
+      long_description_content_type="text/markdown",
+      author=AUTHOR,
+      author_email=EMAIL,
+      python_requires=REQUIRES_PYTHON,
+      url=URL,
+      packages=find_packages(exclude=["tests", "*.tests", "*.tests.*", "tests.*"]),
+      install_requires=REQUIRED,
+      extras_require=EXTRAS,
+      include_package_data=True,
+      license="Apache",
+      classifiers=[
+          # Full list: https://pypi.python.org/pypi?%3Aaction=list_classifiers
+          "License :: OSI Approved :: Apache Software License",
+          "Programming Language :: Python :: 3 :: Only"
+      ],
+      cmdclass={
+          "upload": UploadCommand,
+      },
+      )
